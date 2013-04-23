@@ -4,12 +4,24 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <sys/types.h>
 #include <string.h>
 #include <unistd.h>
 
 using namespace std;
 
+const int NTHREADS = 10;
+pthread_t threads[NTHREADS];
+
+struct data {
+  //include cache and mutex pointers
+  int socketfd;
+  
+};
+void routine (void* dat){
+  pthread_exit(NULL);
+}
 int main (int argc, char *argv[])
 {
   // command line parsing
