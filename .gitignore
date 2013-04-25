@@ -3,4 +3,5 @@ build
 .lock*
 \#*
 *swp
-
+wscript
+wscript~
