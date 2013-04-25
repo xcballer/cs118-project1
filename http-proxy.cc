@@ -4,7 +4,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <pthread.h>
+#include <boost/thread.hpp>
 #include <sys/types.h>
 #include <string.h>
 #include <unistd.h>
@@ -19,18 +19,19 @@ using namespace std;
 
 #define RESPONSE_SIZE 100000
 #define REQUEST_SIZE 80000
+#ifndef BOOST_SYSTEM_NO_DEPRECATED
+#define BOOST_STSTEM_NO_DEPRECATED 1
+#endif
 
-const int NTHREADS = 10;
-pthread_t threads[NTHREADS];
-
-struct data {
+const int MAXTHREADS = 10;
+boost::thread* threads[MAXTHREADS];
+struct Data {
   //include cache and mutex pointers
+  //i want to include the pid num as well
+  int id;
   int socketfd;
   
 };
-void routine (void* dat){
-  pthread_exit(NULL);
-}
 
 char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
 {
@@ -200,10 +201,19 @@ void parse_request(int sockfd2)
     close(sockfd2);
 }
 
+ void routine (Data* dat){
+    parse_request(dat->socketfd);
+  }
+
 int main (int argc, char *argv[])
 {
   // command line parsing
-  
+  //typedef std::chrono::duration<int> seconds_type;
+  //thread initialization
+  for(int i = 0; i < MAXTHREADS; i++){
+    threads[i] = NULL;
+  }
+  int numThreads = 0; 
   struct sockaddr_in myAddr;
   memset(&myAddr,0,sizeof(myAddr));
   
@@ -228,11 +238,35 @@ int main (int argc, char *argv[])
       close(sockfd);
       return 1;
     }
-    
+    else{
+      if(numThreads == MAXTHREADS){
+        for(int i = 0; i < MAXTHREADS; i++){
+          threads[i]->join();
+          threads[i] = NULL;
+          numThreads--;
+        }  
+        //run clean up routine
+      }
+      else{
+        for(int i = 0; i < MAXTHREADS; i++){
+          if(threads[i] == NULL){
+            Data* newD = new Data();
+            newD->id = numThreads;
+            newD->socketfd = sockfd2;
+            threads[i] = new boost::thread(routine, newD);
+          //some error check on er
+            numThreads++;
+          }
+        }
+      }
+      //i dont think there has to be an else
+      
+    }
     // THREAD ON THIS FUNCTION?
-    parse_request(sockfd2);
+   // parse_request(sockfd2);
   }
-  
+  for(int i = 0; i < MAXTHREADS; i++)
+    threads[i]->join();
   close(sockfd);
   
   return 0;
