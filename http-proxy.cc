@@ -167,18 +167,35 @@ void parse_request(int sockfd2)
       {
         if(bad[i] != ee[i])
         {
-          /*Send a 404 response*/
-          cout << "404\n";
-          cout << buf<<endl;
+          /*Send a 400 response*/
+          cout << "Sending a 400\n";
+          cout << buf;
           cout << ee<<endl;
+          char _my400[] = "HTTP/1.1 400 Bad Request\r\n";
+          cout << "Length of my message is: "<<strlen(_my400)<<endl;
+          cout <<_my400;
+          write(sockfd2,_my400,26);
+          
+          shutdown(sockfd2,SHUT_RDWR);
+          close(sockfd2);
+          free(buf);
           return;
         }
       }
       /*Send a not supported response*/
       if((header_neq == 1)) //&& (req_neq == 0))
       {
-        cout << "Not supported\n";
+        cout << "Sending a not supported\n";
         cout << buf;
+        cout << ee<<endl;
+        char _my501[] = "HTTP/1.1 501 Not Implemented\r\n";
+        cout << "Length of my message is: "<<strlen(_my501)<<endl;
+        cout <<_my501;
+        write(sockfd2,_my501,30);
+        
+        shutdown(sockfd2,SHUT_RDWR);
+        close(sockfd2);
+        free(buf);
         return;
       }    
     }
