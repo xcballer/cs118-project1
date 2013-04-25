@@ -147,19 +147,40 @@ void parse_request(int sockfd2)
     {
       char const * ee = e.what();
       char bad[] = "Request is not GET";
+      char bad2[] = "Header line does end with \\r\\n";
       int i = 0;
-      for(; (bad[i] != '\0') && (ee[i] != '\0');i++)
+      int header_neq = 0;
+      //int req_neq = 0;
+      for(; (bad2[i] != '\0') && (ee[i] != '\0');i++)
+      {
+        if(bad2[i] != ee[i])
+        {
+          header_neq = 1;
+          break;
+        }
+      }
+      if(header_neq  == 0)
+      {
+        req.ModifyHeader("Host",req.GetHost());
+      }
+      for(i = 0; (bad[i] != '\0') && (ee[i] != '\0') && (header_neq == 1);i++)
       {
         if(bad[i] != ee[i])
         {
           /*Send a 404 response*/
           cout << "404\n";
+          cout << buf<<endl;
+          cout << ee<<endl;
           return;
         }
       }
       /*Send a not supported response*/
-      cout << "Not supported\n";
-      return;
+      if((header_neq == 1)) //&& (req_neq == 0))
+      {
+        cout << "Not supported\n";
+        cout << buf;
+        return;
+      }    
     }
     
     (void) c;  // Avoid compiler warning
@@ -168,7 +189,8 @@ void parse_request(int sockfd2)
     free(buf);
     buf = (char *)malloc(sizeof(char)*req.GetTotalLength());
     req.FormatRequest(buf);
-
+    //cout << "Formatted request\n";
+    //cout << buf;
     char * my_buf = '\0';
     
     string temp = req.GetHost();
@@ -192,7 +214,7 @@ void parse_request(int sockfd2)
     write(sockfd2,my_buf,res_len);
     
     //Delete Allocated Buffers
-    
+    delete [] tempo;
     free(my_buf);
     free(buf);
     
