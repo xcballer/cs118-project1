@@ -69,8 +69,11 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   {
     //Error. Do something here.
     cout << "NULL!\n";
+	freeaddrinfo(result); // Deallocate dynamic stuff
     return NULL;
   }
+  
+  freeaddrinfo(result); // Deallocate dynamic stuff
    
   /*Send Request*/
   write(res_socket,my_buf,my_reqLen);
