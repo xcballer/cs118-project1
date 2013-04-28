@@ -4,8 +4,9 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <boost/thread.hpp>
+//#include <boost/thread.hpp>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -19,19 +20,68 @@ using namespace std;
 
 #define RESPONSE_SIZE 100000
 #define REQUEST_SIZE 80000
-#ifndef BOOST_SYSTEM_NO_DEPRECATED
-#define BOOST_STSTEM_NO_DEPRECATED 1
-#endif
+#define CHILDLIMIT 5
 
-const int MAXTHREADS = 10;
-boost::thread* threads[MAXTHREADS];
-struct Data {
+static int nChilds = 0;
+/*#ifndef BOOST_SYSTEM_NO_DEPRECATED
+#define BOOST_STSTEM_NO_DEPRECATED 1
+#endif*/
+
+//const int MAXTHREADS = 10;
+//boost::thread* threads[MAXTHREADS];
+/*struct Data {
   //include cache and mutex pointers
   //i want to include the pid num as well
   int id;
   int socketfd;
   
-};
+};*/
+
+pid_t blocking_fork()
+{
+  pid_t pid;
+  int stat;
+
+  if (nChilds < CHILDLIMIT)
+  {
+    nChilds++;
+    return fork();
+  }
+  else
+  {
+    //printf("reached maximum number of children, reaping zombies...\n");
+    while (nChilds != 0)
+    {
+      pid = waitpid(-1, &stat, WNOHANG);
+      if (pid == -1)
+      { // Wait error
+        return -1;
+      }
+      else if (pid == 0)
+      { 
+        if (nChilds == CHILDLIMIT)
+        { // No child died, block until one does
+          //printf("no child died...\n");
+          cout << "Entered blocking fork!!!\n";
+          while (waitpid(-1, &stat, 0) && WIFEXITED(stat))
+            /* just wait until an exit */;
+          return fork();
+        }
+        else
+        { // At least one child has finished, but no more are available
+          break;
+        }
+      }
+      else
+      {
+        //printf("child %d was reaped\n", pid);
+        nChilds--;
+      }
+    }
+    nChilds++;
+    return fork();
+  }
+}
 
 char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
 {
@@ -69,7 +119,7 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   {
     //Error. Do something here.
     cout << "NULL!\n";
-	freeaddrinfo(result); // Deallocate dynamic stuff
+  freeaddrinfo(result); // Deallocate dynamic stuff
     return NULL;
   }
   
@@ -104,15 +154,15 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   }
   
   //total_count += res_read;
-  res_buf[total_count] = '\0';
+  //res_buf[total_count] = '\0';
   *res_len = total_count;
   //cout << "Length of response is: " << total_count << " " << RESPONSE_SIZE <<endl;
   //cout << res_buf << endl;
   
-  HttpResponse resp;
+  //HttpResponse resp;
     
-  char const * c = resp.ParseResponse(res_buf,total_count);
-  (void) c;
+  //char const * c = resp.ParseResponse(res_buf,total_count);
+  //(void) c;
     
   //cout << res_buf << endl;
   
@@ -124,6 +174,7 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
 
 void parse_request(int sockfd2)
 {
+  cout << "Entered parse_request! PID: " << getpid()<<endl;
   //cout << "entered parse_request\n";
     char * buf = (char *)malloc(sizeof(char)*REQUEST_SIZE);
     HttpRequest req;
@@ -139,7 +190,14 @@ void parse_request(int sockfd2)
     }
   
     total_count += num_read;
-    buf[total_count] = '\0';
+    if(total_count == 0)
+    {
+        shutdown(sockfd2,SHUT_RDWR);
+        close(sockfd2);
+        free(buf);
+        return;
+    }
+    //buf[total_count] = '\0';
     //cout << total_count<< " "<< real_size;
     char const * c = NULL;
     try
@@ -227,8 +285,13 @@ void parse_request(int sockfd2)
     int res_len;
     total_count = req.GetTotalLength();
     my_buf = send_request(buf, tempo, total_count,&res_len);
-    if(my_buf == NULL)
+    if(my_buf == NULL || res_len == 0)
+    {
+      shutdown(sockfd2,SHUT_RDWR);
+      close(sockfd2);
+      free(buf);
       return;
+    }
     
     //Respond back to client
     write(sockfd2,my_buf,res_len);
@@ -243,19 +306,21 @@ void parse_request(int sockfd2)
     close(sockfd2);
 }
 
- void routine (Data* dat){
+/* void routine (Data* dat){
     parse_request(dat->socketfd);
-  }
+  }*/
 
 int main (int argc, char *argv[])
 {
-  // command line parsing
   //typedef std::chrono::duration<int> seconds_type;
   //thread initialization
-  for(int i = 0; i < MAXTHREADS; i++){
+  /*for(int i = 0; i < MAXTHREADS; i++){
     threads[i] = NULL;
   }
-  int numThreads = 0; 
+  int numThreads = 0; */
+  
+  pid_t pid;
+  
   struct sockaddr_in myAddr;
   memset(&myAddr,0,sizeof(myAddr));
   
@@ -280,7 +345,7 @@ int main (int argc, char *argv[])
       close(sockfd);
       return 1;
     }
-    else{
+    /*else{
       if(numThreads == MAXTHREADS){
         for(int i = 0; i < MAXTHREADS; i++){
           threads[i]->join();
@@ -303,12 +368,36 @@ int main (int argc, char *argv[])
       }
       //i dont think there has to be an else
       
+    }*/
+    
+    if(CHILDLIMIT != 0)
+    {
+      pid = blocking_fork();
+      if(pid == -1)
+      {
+        cout << "Error: fork()ing error\n";
+        close(sockfd);
+        return 1;
+      }
+      else if(pid != 0)
+      {
+        //Parent
+        close(sockfd2);
+        continue;
+      }
+      else
+      {
+        //Child
+        parse_request(sockfd2);
+        cout << "GONNA DIE!" << getpid() << endl;
+        _exit(0);
+      }
     }
-    // THREAD ON THIS FUNCTION?
-   // parse_request(sockfd2);
+    else
+      parse_request(sockfd2);
   }
-  for(int i = 0; i < MAXTHREADS; i++)
-    threads[i]->join();
+  /*for(int i = 0; i < MAXTHREADS; i++)
+    threads[i]->join();*/
   close(sockfd);
   
   return 0;
