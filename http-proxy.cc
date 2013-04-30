@@ -4,22 +4,21 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-//#include <boost/thread.hpp>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-
-
 #include <stdlib.h>
-#include "http-request.h"
-#include "http-response.h"
-#include "http-headers.h"
 #include <errno.h>
 #include <sys/time.h>
 #include <fcntl.h>
+
+#include "http-request.h"
+#include "http-response.h"
+#include "http-headers.h"
+
 using namespace std;
 
 #define RESPONSE_SIZE 10000
@@ -27,19 +26,7 @@ using namespace std;
 #define CHILDLIMIT 5
 
 static int nChilds = 0;
-/*#ifndef BOOST_SYSTEM_NO_DEPRECATED
-#define BOOST_STSTEM_NO_DEPRECATED 1
-#endif*/
 
-//const int MAXTHREADS = 10;
-//boost::thread* threads[MAXTHREADS];
-/*struct Data {
-  //include cache and mutex pointers
-  //i want to include the pid num as well
-  int id;
-  int socketfd;
-  
-};*/
 string get_file_name(char* hostname)
 {
     string host = "";
@@ -139,7 +126,6 @@ pid_t blocking_fork()
         if (nChilds == CHILDLIMIT)
         { // No child died, block until one does
           //printf("no child died...\n");
-          //cout << "Entered blocking fork!!!\n";
           while (waitpid(-1, &stat, 0) && WIFEXITED(stat))
             /* just wait until an exit */;
           return fork();
@@ -160,7 +146,8 @@ pid_t blocking_fork()
   }
 }
 
-char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c_socket)
+char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c_socket
+  HttpRequest* hr)
 {
   /*Set up socket to send request*/
     
@@ -174,9 +161,9 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   hints.ai_flags = 0;
   hints.ai_protocol = 0;
   
-  //cout << req << endl;
-  getaddrinfo(req, "80", &hints, &result);
-  //if s < 0 error
+  char my_port[10];
+  sprintf(my_port,"%d",hr->GetPort());
+  getaddrinfo(req, my_port, &hints, &result);
   
   for(rp = result; rp != NULL;rp = rp->ai_next)
   {
@@ -195,9 +182,8 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   if(rp == NULL)
   {
     //Error. Do something here.
-    cout << "NULL!\n";
-  //freeaddrinfo(result); // Deallocate dynamic stuff
-  cout << "Didn't crash!\n";
+    //TODO
+    //freeaddrinfo(result); // Deallocate dynamic stuff only if iterated
     return NULL;
   }
   
@@ -219,18 +205,10 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   }
   
   /*Recieve Response and send response*/
-  //char * res_buf = new char[RESPONSE_SIZE];
   char *res_buf = (char *)malloc(sizeof(char)*RESPONSE_SIZE);
   int res_read = 0;
   int total_count = 0;
   int real_size = RESPONSE_SIZE;
-  /*while((res_read = read(res_socket,res_buf+total_count,RESPONSE_SIZE)) == RESPONSE_SIZE)
-  {
-    cout << "response is big!" << endl;
-    total_count += res_read;
-    char * t = (char *)realloc(res_buf,sizeof(char)*(total_count+RESPONSE_SIZE));
-    res_buf = t;
-  }*/
   
   struct timeval tv;
   fd_set readfds;
@@ -255,13 +233,6 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
     {
       if((res_read = recv(res_socket,res_buf+total_count,real_size-total_count,0)) > 0)
       {
-        /*if(res_read == -1)
-        {
-          cout << "read returned -1!!!\n";
-          close(res_socket);
-          free(res_buf);
-          return NULL;
-        }*/
         total_count += res_read;
         if(total_count == real_size)
         {
@@ -276,23 +247,13 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
     else
       break; // Timeout
   }
-  //total_count += res_read;
-  //res_buf[total_count] = '\0';
+  
   *res_len = total_count;
   if(total_count == 0)
   {
     free(res_buf);
     res_buf = NULL;
   }
-  //cout << "Length of response is: " << total_count << " " << RESPONSE_SIZE <<endl;
-  //cout << res_buf << endl;
-  
-  //HttpResponse resp;
-    
-  //char const * c = resp.ParseResponse(res_buf,total_count);
-  //(void) c;
-    
-  //cout << res_buf << endl;
   
   shutdown(res_socket,SHUT_RDWR);
   close(res_socket);
@@ -302,8 +263,6 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
 
 void parse_request(int sockfd2)
 {
-  //cout << "Entered parse_request! PID: " << getpid()<<endl;
-  //cout << "entered parse_request\n";
     char * buf = (char *)malloc(sizeof(char)*REQUEST_SIZE);
     HttpRequest req;
   
@@ -336,8 +295,7 @@ void parse_request(int sockfd2)
         free(buf);
         return;
     }
-    //buf[total_count] = '\0';
-    //cout << total_count<< " "<< real_size;
+    
     char const * c = NULL;
     try
     {
@@ -368,12 +326,9 @@ void parse_request(int sockfd2)
         if(bad[i] != ee[i])
         {
           /*Send a 400 response*/
-          cout << "Sending a 400\n";
-          cout << buf;
-          cout << ee<<endl;
           char _my400[] = "HTTP/1.1 400 Bad Request\r\n";
-          cout << "Length of my message is: "<<strlen(_my400)<<endl;
-          cout <<_my400;
+          
+          //TODO Use send here
           write(sockfd2,_my400,26);
           
           shutdown(sockfd2,SHUT_RDWR);
@@ -385,12 +340,9 @@ void parse_request(int sockfd2)
       /*Send a not supported response*/
       if((header_neq == 1)) //&& (req_neq == 0))
       {
-        cout << "Sending a not supported\n";
-        cout << buf;
-        cout << ee<<endl;
         char _my501[] = "HTTP/1.1 501 Not Implemented\r\n";
-        cout << "Length of my message is: "<<strlen(_my501)<<endl;
-        cout <<_my501;
+        
+        //TODO Use send here
         write(sockfd2,_my501,30);
         
         shutdown(sockfd2,SHUT_RDWR);
@@ -406,8 +358,7 @@ void parse_request(int sockfd2)
     free(buf);
     buf = (char *)malloc(sizeof(char)*req.GetTotalLength());
     req.FormatRequest(buf);
-    //cout << "Formatted request\n";
-    //cout << buf;
+    
     char * my_buf = NULL;
     
     string temp = req.GetHost();
@@ -417,15 +368,12 @@ void parse_request(int sockfd2)
       tempo[i] = temp[i];
     tempo[size] = '\0';
     
-    //send_response(my_buf, tempo, my_reqLen);
-    //cout << total_count<< endl;
-    //cout << buf << endl;
-    
     int res_len;
     total_count = req.GetTotalLength();
     my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2);
     if(my_buf == NULL)
     {
+      //May want to write to client here
       shutdown(sockfd2,SHUT_RDWR);
       close(sockfd2);
       free(buf);
@@ -450,6 +398,7 @@ void parse_request(int sockfd2)
       acc += j;
       if(acc == res_len) break;
     }
+    
     //Delete Allocated Buffers
     delete [] tempo;
     free(my_buf);
@@ -460,19 +409,8 @@ void parse_request(int sockfd2)
     close(sockfd2);
 }
 
-/* void routine (Data* dat){
-    parse_request(dat->socketfd);
-  }*/
-
 int main (int argc, char *argv[])
 {
-  //typedef std::chrono::duration<int> seconds_type;
-  //thread initialization
-  /*for(int i = 0; i < MAXTHREADS; i++){
-    threads[i] = NULL;
-  }
-  int numThreads = 0; */
-  
   pid_t pid;
   
   struct sockaddr_in myAddr;
@@ -499,30 +437,6 @@ int main (int argc, char *argv[])
       close(sockfd);
       return 1;
     }
-    /*else{
-      if(numThreads == MAXTHREADS){
-        for(int i = 0; i < MAXTHREADS; i++){
-          threads[i]->join();
-          threads[i] = NULL;
-          numThreads--;
-        }  
-        //run clean up routine
-      }
-      else{
-        for(int i = 0; i < MAXTHREADS; i++){
-          if(threads[i] == NULL){
-            Data* newD = new Data();
-            newD->id = numThreads;
-            newD->socketfd = sockfd2;
-            threads[i] = new boost::thread(routine, newD);
-          //some error check on er
-            numThreads++;
-          }
-        }
-      }
-      //i dont think there has to be an else
-      
-    }*/
     
     if(CHILDLIMIT != 0)
     {
