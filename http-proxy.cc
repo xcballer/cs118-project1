@@ -146,8 +146,8 @@ pid_t blocking_fork()
   }
 }
 
-char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c_socket,
-  HttpRequest* hr)
+char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int c_socket,
+  HttpRequest* hr,char * cached_data)
 {
   /*Set up socket to send request*/
     
@@ -161,10 +161,14 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   hints.ai_flags = 0;
   hints.ai_protocol = 0;
   
+  /*Convert number to string*/
   char my_port[10];
   sprintf(my_port,"%d",hr->GetPort());
-  getaddrinfo(req, my_port, &hints, &result);
   
+  //Get IP of host
+  getaddrinfo(host, my_port, &hints, &result);
+  
+  //Look for an IP that works
   for(rp = result; rp != NULL;rp = rp->ai_next)
   {
     
@@ -181,7 +185,7 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
 
   if(rp == NULL)
   {
-    //Error. Do something here.
+    //Error. Do something here. Couldn't get IP
     //TODO
     //freeaddrinfo(result); // Deallocate dynamic stuff only if iterated
     return NULL;
@@ -190,6 +194,7 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   freeaddrinfo(result); // Deallocate dynamic stuff
    
   /*Send Request*/
+  cout << "Sending the following\n" << my_buf;
   int acc = 0;
   for(;;)
   {
@@ -204,7 +209,7 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
     if(my_reqLen == (size_t) acc) break;
   }
   
-  /*Recieve Response and send response*/
+  /*Recieve Response*/
   char *res_buf = (char *)malloc(sizeof(char)*RESPONSE_SIZE);
   int res_read = 0;
   int total_count = 0;
@@ -249,6 +254,8 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   }
   
   *res_len = total_count;
+  
+  /*If we did not receive anything return null*/
   if(total_count == 0)
   {
     free(res_buf);
@@ -258,6 +265,17 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c
   shutdown(res_socket,SHUT_RDWR);
   close(res_socket);
   
+  /*Parse Request to see if we got a 304*/
+  HttpResponse server_response;
+  char const * d = server_response.ParseResponse(res_buf,total_count);
+  (void) d; //Avoid compiler warning
+  if(server_response.GetStatusCode() == "304")
+  {
+    //We have the latest version. Return the cached version.
+    return cached_data;
+  }
+  //cout << "Gonna create a cache!!\n";
+  cache_write(host,res_buf,total_count);
   return res_buf;
 }
 
@@ -297,6 +315,8 @@ void parse_request(int sockfd2)
     }
     
     char const * c = NULL;
+    
+    //Parse the request
     try
     {
       c = req.ParseRequest(buf,total_count);
@@ -354,13 +374,42 @@ void parse_request(int sockfd2)
     
     (void) c;  // Avoid compiler warning
     
+    /* Add Connection close header*/
     req.ModifyHeader("Connection","close");
+    
+    char * my_buf = NULL;
+    int res_len;
+    
+    //If cached, get last modified date
+    char * cached_data = cache_read(&req);
+    if(cached_data != NULL)
+    {
+      string last_mod;
+      string expires;
+      HttpResponse cached_res;
+      //May want to add exception handling
+      char const * d = cached_res.ParseResponse(cached_data,strlen(cached_data));
+      (void) d; // avoid compiler warning
+      
+      last_mod = cached_res.FindHeader("Last-Modified");
+      expires = cached_res.FindHeader("Expires");
+      
+      /*TODO*/
+      //Convert to numbers to compare
+      //If Expires is greater than todays date, check for update
+      //Else use set my_buf to cache (use strlen stuff too) and goto fin:
+      
+      if(last_mod != "")
+      {
+        //cout << date << endl;
+        req.ModifyHeader("If-Modified-Since",last_mod);
+      }
+    }
     free(buf);
     buf = (char *)malloc(sizeof(char)*req.GetTotalLength());
     req.FormatRequest(buf);
     
-    char * my_buf = NULL;
-    
+    /*Copy host name into a char buffer*/
     string temp = req.GetHost();
     int size = temp.size();
     char * tempo = new char [size+1];
@@ -368,20 +417,24 @@ void parse_request(int sockfd2)
       tempo[i] = temp[i];
     tempo[size] = '\0';
     
-    int res_len;
     total_count = req.GetTotalLength();
-    my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2,&req);
+    
+    //Send request to server
+    my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2,&req,cached_data);
+    delete [] tempo;
+    
     if(my_buf == NULL)
     {
       //May want to write to client here
       shutdown(sockfd2,SHUT_RDWR);
       close(sockfd2);
       free(buf);
-      delete [] tempo;
       return;
     }
     
     //Respond back to client
+    //fin:
+    
     int acc = 0;
     for(;;)
     {
@@ -392,7 +445,6 @@ void parse_request(int sockfd2)
         close(sockfd2);
         free(buf);
         free(my_buf);
-        delete [] tempo;
         return;
       }
       acc += j;
@@ -400,7 +452,6 @@ void parse_request(int sockfd2)
     }
     
     //Delete Allocated Buffers
-    delete [] tempo;
     free(my_buf);
     free(buf);
     
@@ -441,7 +492,7 @@ int main (int argc, char *argv[])
     if(CHILDLIMIT != 0)
     {
       pid = blocking_fork();
-      cout << nChilds << " children left out of 5\n";
+      //cout << nChilds << " children left out of 5\n";
       if(pid == -1)
       {
         cout << "Error: fork()ing error\n";
@@ -459,7 +510,7 @@ int main (int argc, char *argv[])
         //Child
         close(sockfd);
         parse_request(sockfd2);
-        cout << "GONNA DIE!" << getpid() << endl;
+        //cout << "GONNA DIE!" << getpid() << endl;
         _exit(0);
       }
     }
