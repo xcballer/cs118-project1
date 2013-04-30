@@ -370,7 +370,7 @@ void parse_request(int sockfd2)
     
     int res_len;
     total_count = req.GetTotalLength();
-    my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2);
+    my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2,&req);
     if(my_buf == NULL)
     {
       //May want to write to client here
