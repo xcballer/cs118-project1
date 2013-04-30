@@ -131,7 +131,12 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   for(;;)
   {
     int j = send(res_socket,my_buf+acc,my_reqLen-acc,0);
-    /*TODO Check for negative return value */
+    if(j == -1)
+    {
+      cout << "send returned -1!!\n";
+      close(res_socket);
+      return NULL;
+    }
     acc += j;
     if(my_reqLen == (size_t) acc) break;
   }
@@ -152,6 +157,13 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   
   while((res_read = read(res_socket,res_buf+total_count,real_size-total_count)) > 0)
   {
+    if(res_read == -1)
+    {
+      cout << "read returned -1!!!\n";
+      close(res_socket);
+      free(res_buf);
+      return NULL;
+    }
     total_count += res_read;
     if(total_count == real_size)
     {
@@ -164,6 +176,11 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   //total_count += res_read;
   //res_buf[total_count] = '\0';
   *res_len = total_count;
+  if(total_count == 0)
+  {
+    free(res_buf);
+    res_buf = NULL;
+  }
   //cout << "Length of response is: " << total_count << " " << RESPONSE_SIZE <<endl;
   //cout << res_buf << endl;
   
@@ -192,6 +209,13 @@ void parse_request(int sockfd2)
     //int real_size = REQUEST_SIZE;
     while((num_read = read(sockfd2,buf+total_count,REQUEST_SIZE)) == REQUEST_SIZE)
     {
+      if(num_read == -1)
+      {
+        cout << "read returned -1!!\n";
+        close(sockfd2);
+        free(buf);
+        return;
+      }
       total_count += num_read;
       char * t = (char *) realloc(buf,sizeof(char)*(total_count+REQUEST_SIZE));
       buf = t;
@@ -286,7 +310,7 @@ void parse_request(int sockfd2)
     req.FormatRequest(buf);
     //cout << "Formatted request\n";
     //cout << buf;
-    char * my_buf = '\0';
+    char * my_buf = NULL;
     
     string temp = req.GetHost();
     int size = temp.size();
@@ -302,11 +326,12 @@ void parse_request(int sockfd2)
     int res_len;
     total_count = req.GetTotalLength();
     my_buf = send_request(buf, tempo, total_count,&res_len);
-    if(my_buf == NULL || res_len == 0)
+    if(my_buf == NULL)
     {
       shutdown(sockfd2,SHUT_RDWR);
       close(sockfd2);
       free(buf);
+      delete [] tempo;
       return;
     }
     
@@ -315,7 +340,15 @@ void parse_request(int sockfd2)
     for(;;)
     {
       int j = send(sockfd2,my_buf+acc,res_len-acc,0);
-      /*TODO Check for negative return value */
+      if(j == -1)
+      {
+        cout << "send returned -1!!\n";
+        close(sockfd2);
+        free(buf);
+        free(my_buf);
+        delete [] tempo;
+        return;
+      }
       acc += j;
       if(acc == res_len) break;
     }
