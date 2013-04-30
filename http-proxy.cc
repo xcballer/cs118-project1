@@ -20,7 +20,7 @@ using namespace std;
 
 #define RESPONSE_SIZE 100000
 #define REQUEST_SIZE 80000
-#define CHILDLIMIT 5
+#define CHILDLIMIT 10
 
 static int nChilds = 0;
 /*#ifndef BOOST_SYSTEM_NO_DEPRECATED
@@ -119,14 +119,22 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
   {
     //Error. Do something here.
     cout << "NULL!\n";
-  freeaddrinfo(result); // Deallocate dynamic stuff
+  //freeaddrinfo(result); // Deallocate dynamic stuff
+  cout << "Didn't crash!\n";
     return NULL;
   }
   
   freeaddrinfo(result); // Deallocate dynamic stuff
    
   /*Send Request*/
-  write(res_socket,my_buf,my_reqLen);
+  int acc = 0;
+  for(;;)
+  {
+    int j = send(res_socket,my_buf+acc,my_reqLen-acc,0);
+    /*TODO Check for negative return value */
+    acc += j;
+    if(my_reqLen == (size_t) acc) break;
+  }
   
   /*Recieve Response and send response*/
   //char * res_buf = new char[RESPONSE_SIZE];
@@ -174,7 +182,7 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
 
 void parse_request(int sockfd2)
 {
-  cout << "Entered parse_request! PID: " << getpid()<<endl;
+  //cout << "Entered parse_request! PID: " << getpid()<<endl;
   //cout << "entered parse_request\n";
     char * buf = (char *)malloc(sizeof(char)*REQUEST_SIZE);
     HttpRequest req;
@@ -188,7 +196,16 @@ void parse_request(int sockfd2)
       char * t = (char *) realloc(buf,sizeof(char)*(total_count+REQUEST_SIZE));
       buf = t;
     }
-  
+    /*while((num_read = recv(sockfd2,buf+total_count,real_size-total_count,0)) > 0)
+    {
+      total_count += num_read;
+      if(total_count == real_size)
+      {
+        char * t = (char *) realloc(buf,sizeof(char)*(real_size+REQUEST_SIZE));
+        res_buf = t;
+        real_size += REQUEST_SIZE;
+      }
+    }*/
     total_count += num_read;
     if(total_count == 0)
     {
@@ -294,8 +311,14 @@ void parse_request(int sockfd2)
     }
     
     //Respond back to client
-    write(sockfd2,my_buf,res_len);
-    
+    int acc = 0;
+    for(;;)
+    {
+      int j = send(sockfd2,my_buf+acc,res_len-acc,0);
+      /*TODO Check for negative return value */
+      acc += j;
+      if(acc == res_len) break;
+    }
     //Delete Allocated Buffers
     delete [] tempo;
     free(my_buf);
@@ -388,6 +411,7 @@ int main (int argc, char *argv[])
       else
       {
         //Child
+        close(sockfd);
         parse_request(sockfd2);
         cout << "GONNA DIE!" << getpid() << endl;
         _exit(0);
