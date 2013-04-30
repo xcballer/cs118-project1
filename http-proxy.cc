@@ -146,7 +146,7 @@ pid_t blocking_fork()
   }
 }
 
-char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c_socket
+char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c_socket,
   HttpRequest* hr)
 {
   /*Set up socket to send request*/
