@@ -7,6 +7,8 @@
 //#include <boost/thread.hpp>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -18,7 +20,6 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <fcntl.h>
-
 using namespace std;
 
 #define RESPONSE_SIZE 10000
@@ -39,7 +40,80 @@ static int nChilds = 0;
   int socketfd;
   
 };*/
-
+string get_file_name(char* hostname)
+{
+    string host = "";
+    for(int i = 0; hostname[i] != '\0'; i++){
+      if(hostname[i] == '.' || hostname[i] == '/'){
+        continue;
+      }
+      else
+        host += hostname[i];
+    }
+    host += ".txt";
+    return host;
+}
+int cache_write(char* hostname, char* res, int len)
+{
+  string filename = get_file_name(hostname);
+  char* fname = new char[filename.length() + 1];
+  strcpy(fname, filename.c_str());
+  int fd;
+  fd = open(fname, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR);
+  if(fd < 0)
+    return -1;
+  struct flock fl;
+  fl.l_type = F_WRLCK;
+  fl.l_whence = SEEK_SET;
+  fl.l_start = 0;
+  fl.l_len = 0;
+  fl.l_pid = getpid();
+  fcntl(fd, F_SETLKW, &fl);
+  size_t length = len;
+  write(fd, res, length);
+  close(fd);
+  fl.l_type = F_UNLCK;
+  fcntl(fd, F_SETLK, &fd);
+  delete [] fname;
+  return 0;
+  
+}
+char* cache_read(HttpRequest* req)
+{
+  string hostname = req->GetHost();
+  int len = hostname.length()+1;
+  char* cstr = new char [len];
+  strcpy(cstr, hostname.c_str());
+  hostname = get_file_name(cstr);
+  char* fname = new char [hostname.length() + 1];
+  strcpy(fname, hostname.c_str());
+  int fd;
+  fd = open(fname, O_RDONLY);
+  if(fd < 0)
+    return NULL;
+  //lock
+  struct flock fl;
+  fl.l_type = F_RDLCK;
+  fl.l_whence = SEEK_SET;
+  fl.l_start = 0;
+  fl.l_len = 0;
+  fl.l_pid = getpid();
+  fcntl(fd, F_SETLKW  , &fl);
+  struct stat filestat;
+  if(fstat(fd, &filestat) < 0)
+    return NULL;
+  size_t length = filestat.st_size;
+  char* buf = (char*)malloc((sizeof(char) * length) + 1);
+  read(fd, buf, length);
+  buf[length] = '\0';
+  //release lock
+  close(fd);
+  fl.l_type = F_UNLCK;
+  fcntl(fd, F_SETLK, &fl);
+  delete [] cstr;
+  delete [] fname;
+  return buf;
+}
 pid_t blocking_fork()
 {
   pid_t pid;
