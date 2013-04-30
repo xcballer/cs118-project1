@@ -15,12 +15,15 @@
 #include "http-request.h"
 #include "http-response.h"
 #include "http-headers.h"
+#include <errno.h>
+#include <sys/time.h>
+#include <fcntl.h>
 
 using namespace std;
 
-#define RESPONSE_SIZE 100000
-#define REQUEST_SIZE 80000
-#define CHILDLIMIT 10
+#define RESPONSE_SIZE 10000
+#define REQUEST_SIZE 8000
+#define CHILDLIMIT 5
 
 static int nChilds = 0;
 /*#ifndef BOOST_SYSTEM_NO_DEPRECATED
@@ -62,7 +65,7 @@ pid_t blocking_fork()
         if (nChilds == CHILDLIMIT)
         { // No child died, block until one does
           //printf("no child died...\n");
-          cout << "Entered blocking fork!!!\n";
+          //cout << "Entered blocking fork!!!\n";
           while (waitpid(-1, &stat, 0) && WIFEXITED(stat))
             /* just wait until an exit */;
           return fork();
@@ -83,7 +86,7 @@ pid_t blocking_fork()
   }
 }
 
-char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
+char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len,int c_socket)
 {
   /*Set up socket to send request*/
     
@@ -155,24 +158,50 @@ char* send_request(char* my_buf, char *req, size_t my_reqLen,int * res_len)
     res_buf = t;
   }*/
   
-  while((res_read = read(res_socket,res_buf+total_count,real_size-total_count)) > 0)
+  struct timeval tv;
+  fd_set readfds;
+  int maxfd = (res_socket > c_socket) ? res_socket : c_socket; 
+  
+  for(;;)
   {
-    if(res_read == -1)
+    tv.tv_sec = 5; // Timeout after 5 sec
+    tv.tv_usec = 0;
+    FD_ZERO(&readfds);
+    FD_SET(res_socket,&readfds);
+    
+    int n = select(maxfd+1, &readfds,NULL,NULL,&tv);
+    if(n < 0)
     {
-      cout << "read returned -1!!!\n";
-      close(res_socket);
+      cout << "select failed!!\n";
       free(res_buf);
+      close(res_socket);
       return NULL;
     }
-    total_count += res_read;
-    if(total_count == real_size)
+    if(FD_ISSET(res_socket,&readfds))
     {
-      char * t = (char *) realloc(res_buf,sizeof(char)*(real_size+RESPONSE_SIZE));
-      res_buf = t;
-      real_size += RESPONSE_SIZE;
+      if((res_read = recv(res_socket,res_buf+total_count,real_size-total_count,0)) > 0)
+      {
+        /*if(res_read == -1)
+        {
+          cout << "read returned -1!!!\n";
+          close(res_socket);
+          free(res_buf);
+          return NULL;
+        }*/
+        total_count += res_read;
+        if(total_count == real_size)
+        {
+          char * t = (char *) realloc(res_buf,sizeof(char)*(real_size+RESPONSE_SIZE));
+          res_buf = t;
+          real_size += RESPONSE_SIZE;
+          }
+      }
+      else
+        break; //End of request
     }
+    else
+      break; // Timeout
   }
-  
   //total_count += res_read;
   //res_buf[total_count] = '\0';
   *res_len = total_count;
@@ -207,15 +236,9 @@ void parse_request(int sockfd2)
     int num_read = 0;
     int total_count = 0;
     //int real_size = REQUEST_SIZE;
+    //fcntl(sockfd2,F_SETFL,O_NONBLOCK);
     while((num_read = read(sockfd2,buf+total_count,REQUEST_SIZE)) == REQUEST_SIZE)
     {
-      if(num_read == -1)
-      {
-        cout << "read returned -1!!\n";
-        close(sockfd2);
-        free(buf);
-        return;
-      }
       total_count += num_read;
       char * t = (char *) realloc(buf,sizeof(char)*(total_count+REQUEST_SIZE));
       buf = t;
@@ -226,11 +249,12 @@ void parse_request(int sockfd2)
       if(total_count == real_size)
       {
         char * t = (char *) realloc(buf,sizeof(char)*(real_size+REQUEST_SIZE));
-        res_buf = t;
+        buf = t;
         real_size += REQUEST_SIZE;
       }
     }*/
-    total_count += num_read;
+    if(num_read > 0)
+      total_count += num_read;
     if(total_count == 0)
     {
         shutdown(sockfd2,SHUT_RDWR);
@@ -325,7 +349,7 @@ void parse_request(int sockfd2)
     
     int res_len;
     total_count = req.GetTotalLength();
-    my_buf = send_request(buf, tempo, total_count,&res_len);
+    my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2);
     if(my_buf == NULL)
     {
       shutdown(sockfd2,SHUT_RDWR);
@@ -429,6 +453,7 @@ int main (int argc, char *argv[])
     if(CHILDLIMIT != 0)
     {
       pid = blocking_fork();
+      cout << nChilds << " children left out of 5\n";
       if(pid == -1)
       {
         cout << "Error: fork()ing error\n";
