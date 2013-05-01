@@ -220,7 +220,7 @@ char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int 
   freeaddrinfo(result); // Deallocate dynamic stuff
    
   /*Send Request*/
-  cout << "Sending the following\n" << my_buf;
+  //cout << "Sending the following\n" << my_buf;
   int acc = 0;
   for(;;)
   {
@@ -301,7 +301,13 @@ char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int 
     return cached_data;
   }
   //cout << "Gonna create a cache!!\n";
-  cache_write(host,res_buf,total_count);
+  string temp = hr->GetPath();
+  int size = temp.size();
+  char * tempo = new char [size+1];
+  for(int i = 0; i < size; i++)
+     tempo[i] = temp[i];
+  tempo[size] = '\0';  
+  cache_write(host,tempo,res_buf,total_count);
   return res_buf;
 }
 
