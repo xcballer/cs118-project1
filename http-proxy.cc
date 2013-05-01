@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#include <time.h>
 
 #include "http-request.h"
 #include "http-response.h"
@@ -26,6 +27,23 @@ using namespace std;
 #define CHILDLIMIT 5
 
 static int nChilds = 0;
+
+/*Returns true if cache is up-to-date*/
+bool compare_times(string expires)
+{
+  if(expires == "")
+    return false;
+  time_t curr = time(NULL);
+  struct tm exp;
+  char const * c = strptime(expires.c_str(),"%a, %d %b %Y %H:%M:%S GMT",&exp);
+  if(c != NULL)
+  {
+    time_t expired = mktime(&exp);
+    if(expired > curr)
+      return true;
+  }
+  return false;
+}
 
 string get_file_name(char* hostname)
 {
@@ -379,6 +397,9 @@ void parse_request(int sockfd2)
     
     char * my_buf = NULL;
     int res_len;
+    string temp;
+    int size;
+    char * tempo;
     
     //If cached, get last modified date
     char * cached_data = cache_read(&req);
@@ -396,9 +417,15 @@ void parse_request(int sockfd2)
       
       /*TODO*/
       //Convert to numbers to compare
-      //If Expires is greater than todays date, check for update
+      //If Expires is less than todays date, check for update
       //Else use set my_buf to cache (use strlen stuff too) and goto fin:
-      
+      bool is_current = compare_times(expires);
+      if(is_current)
+      {
+        my_buf = cached_data;
+        res_len = strlen(cached_data);
+        goto fin;
+      }
       if(last_mod != "")
       {
         //cout << date << endl;
@@ -410,9 +437,9 @@ void parse_request(int sockfd2)
     req.FormatRequest(buf);
     
     /*Copy host name into a char buffer*/
-    string temp = req.GetHost();
-    int size = temp.size();
-    char * tempo = new char [size+1];
+    temp = req.GetHost();
+    size = temp.size();
+    tempo = new char [size+1];
     for(int i = 0; i < size; i++)
       tempo[i] = temp[i];
     tempo[size] = '\0';
@@ -433,7 +460,7 @@ void parse_request(int sockfd2)
     }
     
     //Respond back to client
-    //fin:
+    fin:
     
     int acc = 0;
     for(;;)
