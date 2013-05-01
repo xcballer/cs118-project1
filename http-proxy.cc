@@ -55,12 +55,13 @@ string get_file_name(char* hostname)
       else
         host += hostname[i];
     }
-    host += ".txt";
     return host;
 }
-int cache_write(char* hostname, char* res, int len)
+int cache_write(char* hostname, char* path,  char* res, int len)
 {
-  string filename = get_file_name(hostname);
+  string hname = get_file_name(hostname);
+  string pname = get_file_name(path);
+  string filename = hname + pname + ".txt";
   char* fname = new char[filename.length() + 1];
   strcpy(fname, filename.c_str());
   int fd;
@@ -86,12 +87,18 @@ int cache_write(char* hostname, char* res, int len)
 char* cache_read(HttpRequest* req)
 {
   string hostname = req->GetHost();
+  string path = req->GetPath();
+  int pathlen = path.length()+1;
   int len = hostname.length()+1;
   char* cstr = new char [len];
+  char* pstr = new char [pathlen];
   strcpy(cstr, hostname.c_str());
+  strcpy(pstr, path.c_str());
   hostname = get_file_name(cstr);
-  char* fname = new char [hostname.length() + 1];
-  strcpy(fname, hostname.c_str());
+  path = get_file_name(pstr);
+  string filename = hostname + path + ".txt";
+  char* fname = new char [filename.length() + 1];
+  strcpy(fname, filename.c_str());
   int fd;
   fd = open(fname, O_RDONLY);
   if(fd < 0)
@@ -117,6 +124,7 @@ char* cache_read(HttpRequest* req)
   fcntl(fd, F_SETLK, &fl);
   delete [] cstr;
   delete [] fname;
+  delete [] pstr;
   return buf;
 }
 pid_t blocking_fork()
