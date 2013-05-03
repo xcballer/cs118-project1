@@ -15,6 +15,7 @@
 #include <sys/time.h>
 #include <fcntl.h>
 #include <time.h>
+#include <queue>
 
 #include "http-request.h"
 #include "http-response.h"
@@ -28,19 +29,35 @@ using namespace std;
 
 static int nChilds = 0;
 
+int get_message(int socket,int size,int maxfd,char* buf);
+char const* parse_request(char * data, int size, HttpRequest * req,int socket);
+bool check_cached(HttpRequest * req,char* cache);
+int initiate_server(HttpRequest *req);
+int send_message(int socket,int size,char* data);
+//void parse_response(char* data, int size, HttpResponse *res);
+void update_cache(HttpRequest* req, HttpResponse* res,char* data, int length);
+void serve_client(int socket);
+
 /*Returns true if cache is up-to-date*/
 bool compare_times(string expires)
 {
   if(expires == "")
     return false;
   time_t curr = time(NULL);
+  struct tm * currentgmt = gmtime(&curr);
+  //currentgmt->tm_isdst = 0;
+  time_t currgmt = mktime(currentgmt);
   struct tm exp;
+  exp.tm_isdst = 0;
   char const * c = strptime(expires.c_str(),"%a, %d %b %Y %H:%M:%S GMT",&exp);
+  time_t expired;
   if(c != NULL)
   {
-    time_t expired = mktime(&exp);
-    if(expired > curr)
+    expired = mktime(&exp);
+    if(expired > currgmt)
+    {
       return true;
+    }
   }
   return false;
 }
@@ -172,8 +189,78 @@ pid_t blocking_fork()
   }
 }
 
-char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int c_socket,
-  HttpRequest* hr,char * cached_data)
+void update_cache(HttpRequest* req, HttpResponse* res,char * data, int length)
+{
+  HttpResponse initial_r;
+  char const * d = NULL;
+  try
+  {
+    d = initial_r.ParseResponse(data,strlen(data));
+  }
+  catch(ParseException e)
+  {
+    cout << "Caught an exception in update_cache!\n";
+    char const * ee = e.what();
+    cout << ee;
+    return;
+  }
+  //char const * d = initial_r.ParseResponse(data,strlen(data));
+  (void) d; // Avoid compiler warning
+  int init_len = initial_r.GetTotalLength();//Initial length of header stuff
+  int data_len = strlen(data) - init_len; // Length of data (not including header stuff)
+  
+  string expires = res->FindHeader("Expires");
+  string lms = res->FindHeader("Last-Modified");
+  initial_r.ModifyHeader("Expires",expires);
+  initial_r.ModifyHeader("Last-Modified",lms);
+  
+  int my_header_len = initial_r.GetTotalLength();
+  char * result = new char [my_header_len+data_len+1]; // 1 for Null byte
+  initial_r.FormatResponse(result);
+  
+  char * temp = strncat(result,data+init_len,data_len);
+  (void) temp; // Avoid compiler warning
+  
+  string path = req->GetPath();
+  string h = req->GetHost();
+  int hsize = h.size();
+  int size = path.size();
+  char * host = new char [hsize+1];
+  char * pathc = new char [size+1];
+  for(int i = 0; i < hsize; i++)
+    host[i] = h[i];
+  host[hsize] = '\0';        
+  for(int i = 0; i < size; i++)
+    pathc[i] = path[i];
+  pathc[size] = '\0';
+
+  cache_write(host,pathc,result,my_header_len+data_len);
+  cout << result;
+  delete [] host;
+  delete [] pathc;
+  delete [] result;
+}
+
+int send_message(int socket, int size, char* data)
+{
+  int acc = 0;
+  if((data == NULL) || (size < 0))
+    return -1;
+  if(size == 0)
+    return 0;
+  
+  for(;;)
+  {
+    int j = send(socket,data+acc,size-acc,0);
+    if(j == -1)
+      return j;
+    acc += j;
+    if(acc == size) break;
+  }
+  return acc;
+}
+
+int initiate_server(HttpRequest* req)
 {
   /*Set up socket to send request*/
     
@@ -189,7 +276,15 @@ char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int 
   
   /*Convert number to string*/
   char my_port[10];
-  sprintf(my_port,"%d",hr->GetPort());
+  sprintf(my_port,"%d",req->GetPort());
+  
+  /*Get host name*/
+  string h = req->GetHost();
+  int hsize = h.size();
+  char * host = new char [hsize+1];
+  for(int i = 0; i < hsize; i++)
+    host[i] = h[i];
+  host[hsize] = '\0'; 
   
   //Get IP of host
   getaddrinfo(host, my_port, &hints, &result);
@@ -212,65 +307,147 @@ char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int 
   if(rp == NULL)
   {
     //Error. Do something here. Couldn't get IP
-    //TODO
     //freeaddrinfo(result); // Deallocate dynamic stuff only if iterated
-    return NULL;
+    delete [] host;
+    return -1;
   }
   
+  /*Got an IP. Return socket*/
   freeaddrinfo(result); // Deallocate dynamic stuff
-   
-  /*Send Request*/
-  //cout << "Sending the following\n" << my_buf;
-  int acc = 0;
-  for(;;)
-  {
-    int j = send(res_socket,my_buf+acc,my_reqLen-acc,0);
-    if(j == -1)
-    {
-      cout << "send returned -1!!\n";
-      close(res_socket);
-      return NULL;
-    }
-    acc += j;
-    if(my_reqLen == (size_t) acc) break;
-  }
+  delete [] host;
   
-  /*Recieve Response*/
-  char *res_buf = (char *)malloc(sizeof(char)*RESPONSE_SIZE);
-  int res_read = 0;
+  return res_socket;
+}
+
+bool check_cached(HttpRequest * req,char* cache)
+{
+  if(cache != NULL)
+  {
+      string last_mod;
+      string expires;
+      HttpResponse cached_res;
+      //May want to add exception handling
+      char const * d = NULL;
+      try
+      {
+        d = cached_res.ParseResponse(cache,strlen(cache));
+      }
+      catch(ParseException e)
+      {
+        cout << "Caught an exception in check_cached!\n";
+        char const * ee = e.what();
+        cout << ee;
+        return false;
+      }
+      //char const * d = cached_res.ParseResponse(cache,strlen(cache));
+      (void) d; // avoid compiler warning
+      
+      last_mod = cached_res.FindHeader("Last-Modified");
+      expires = cached_res.FindHeader("Expires");
+      
+      //Convert to numbers to compare
+      //If Expires is less than todays date, check for update
+      bool is_current = compare_times(expires);
+      if(is_current)
+      {
+        return true;
+      }
+      if(last_mod != "")
+      {
+        req->ModifyHeader("If-Modified-Since",last_mod);
+      }
+      return false;
+  }
+  else
+    return false;
+}
+
+char const * parse_request(char* data, int size, HttpRequest* req, int socket)
+{
+  char const * c = NULL;
+  try
+  {
+    c = req->ParseRequest(data,size);
+  }
+  catch(ParseException e)
+  {
+    char const * ee = e.what();
+    char bad[] = "Request is not GET";
+    char bad2[] = "Header line does end with \\r\\n";
+    int i = 0;
+    int header_neq = 0;
+    //int req_neq = 0;
+    for(; (bad2[i] != '\0') && (ee[i] != '\0');i++)
+    {
+      if(bad2[i] != ee[i])
+      {
+        header_neq = 1;
+        break;
+      }
+    }
+    if(header_neq  == 0)
+    {
+      req->ModifyHeader("Host",req->GetHost());
+    }
+    for(i = 0; (bad[i] != '\0') && (ee[i] != '\0') && (header_neq == 1);i++)
+    {
+      if(bad[i] != ee[i])
+      {
+        /*Send a 400 response*/
+        char _my400[] = "HTTP/1.1 400 Bad Request\r\n";//Two more characters?
+          
+        //TODO Use send here
+        send_message(socket,26,_my400);
+        
+        return NULL;
+      }
+    }
+    /*Send a not supported response*/
+    if((header_neq == 1)) //&& (req_neq == 0))
+    {
+      char _my501[] = "HTTP/1.1 501 Not Implemented\r\n";
+        
+      //TODO Use send here
+      send_message(socket,30,_my501);
+      
+      return NULL;
+    }    
+  }
+  return c;
+}
+
+int get_message(int socket, int size, int maxfd, char* buf)
+{
+  if((buf == NULL) || (size == 0))
+    return -1;
+    
+  int num_read = 0;
   int total_count = 0;
-  int real_size = RESPONSE_SIZE;
+  int real_size = size;
   
   struct timeval tv;
   fd_set readfds;
-  int maxfd = (res_socket > c_socket) ? res_socket : c_socket; 
   
   for(;;)
   {
     tv.tv_sec = 5; // Timeout after 5 sec
     tv.tv_usec = 0;
     FD_ZERO(&readfds);
-    FD_SET(res_socket,&readfds);
-    
+    FD_SET(socket,&readfds);
     int n = select(maxfd+1, &readfds,NULL,NULL,&tv);
     if(n < 0)
+      return -1;
+    if(FD_ISSET(socket,&readfds))
     {
-      cout << "select failed!!\n";
-      free(res_buf);
-      close(res_socket);
-      return NULL;
-    }
-    if(FD_ISSET(res_socket,&readfds))
-    {
-      if((res_read = recv(res_socket,res_buf+total_count,real_size-total_count,0)) > 0)
+      if((num_read = recv(socket,buf+total_count,real_size-total_count,0)) > 0)
       {
-        total_count += res_read;
+        total_count += num_read;
         if(total_count == real_size)
         {
-          char * t = (char *) realloc(res_buf,sizeof(char)*(real_size+RESPONSE_SIZE));
-          res_buf = t;
-          real_size += RESPONSE_SIZE;
-          }
+          char * t = (char *) realloc(buf,sizeof(char)*(real_size+size));
+          buf = t;
+          real_size += size;
+        }
       }
       else
         break; //End of request
@@ -278,227 +455,220 @@ char* send_request(char* my_buf, char *host, size_t my_reqLen,int * res_len,int 
     else
       break; // Timeout
   }
-  
-  *res_len = total_count;
-  
-  /*If we did not receive anything return null*/
-  if(total_count == 0)
-  {
-    free(res_buf);
-    res_buf = NULL;
-  }
-  
-  shutdown(res_socket,SHUT_RDWR);
-  close(res_socket);
-  
-  /*Parse Request to see if we got a 304*/
-  HttpResponse server_response;
-  char const * d = server_response.ParseResponse(res_buf,total_count);
-  (void) d; //Avoid compiler warning
-  if(server_response.GetStatusCode() == "304")
-  {
-    //We have the latest version. Return the cached version.
-    return cached_data;
-  }
-  //cout << "Gonna create a cache!!\n";
-  string temp = hr->GetPath();
-  int size = temp.size();
-  char * tempo = new char [size+1];
-  for(int i = 0; i < size; i++)
-     tempo[i] = temp[i];
-  tempo[size] = '\0';  
-  cache_write(host,tempo,res_buf,total_count);
-  return res_buf;
+  return total_count;
 }
 
-void parse_request(int sockfd2)
+void serve_client(int client_socket)
 {
-    char * buf = (char *)malloc(sizeof(char)*REQUEST_SIZE);
-    HttpRequest req;
+  int maxchild = CHILDLIMIT/2;
+  int numchilds = 0;
+  pid_t pid;
+  char * buf = NULL;
+  HttpRequest* req;
+  bool is_done = false;
+  queue<HttpRequest*> q;
+  int c_len;
+  char * cached_data = NULL;
+  bool is_good;
+  int special_counter = 0;
   
-    int num_read = 0;
-    int total_count = 0;
-    //int real_size = REQUEST_SIZE;
-    //fcntl(sockfd2,F_SETFL,O_NONBLOCK);
-    while((num_read = read(sockfd2,buf+total_count,REQUEST_SIZE)) == REQUEST_SIZE)
+  start:
+  
+  while(!is_done)
+  {
+    buf = (char *)malloc(sizeof(char)*REQUEST_SIZE);
+    req = new HttpRequest;
+  
+    /* Read from Client*/
+    
+    c_len = get_message(client_socket,REQUEST_SIZE,client_socket,buf);
+    if(c_len == 0)
     {
-      total_count += num_read;
-      char * t = (char *) realloc(buf,sizeof(char)*(total_count+REQUEST_SIZE));
-      buf = t;
+      /*No data*/
+      //close(client_socket);
+      free(buf);
+      free(req);
+      goto fin;
     }
-    /*while((num_read = recv(sockfd2,buf+total_count,real_size-total_count,0)) > 0)
+  
+    /*Parse the request*/
+    char const * c = parse_request(buf,c_len,req,client_socket);
+  
+    if(c == NULL)
     {
-      total_count += num_read;
-      if(total_count == real_size)
+      //close(client_socket);
+      free(buf);
+      free(req);
+      continue;
+    }
+  
+    /*Check for Connection:close header*/
+    string closer = req->FindHeader("Connection");
+    /*if(closer != "close")
+      req->ModifyHeader("Connection","close");
+    else
+      is_done = true;*/
+    if(closer == "close")
+      is_done = true;
+  
+    /*Check cache*/
+    cached_data = cache_read(req);
+  
+    is_good = check_cached(req,cached_data);
+  
+    free(buf);
+    buf = (char*)malloc(sizeof(char)*req->GetTotalLength());
+    req->FormatRequest(buf);
+    c_len = req->GetTotalLength();
+    
+    q.push(req);
+    
+    if(!is_done)
+    {
+      //Fork a child to get data
+      if(numchilds == maxchild)
       {
-        char * t = (char *) realloc(buf,sizeof(char)*(real_size+REQUEST_SIZE));
-        buf = t;
-        real_size += REQUEST_SIZE;
+        waitpid(-1, NULL, 0);
+        numchilds--;
       }
-    }*/
-    if(num_read > 0)
-      total_count += num_read;
-    if(total_count == 0)
-    {
-        shutdown(sockfd2,SHUT_RDWR);
-        close(sockfd2);
+      pid = fork();
+      if(pid == 0)
+      {
+        //Child
+        close(client_socket);
+        break;
+      }
+      if(pid > 0)
+      {
+        numchilds++;
+        if(cached_data != NULL)
+          free(cached_data);
         free(buf);
+      }
+      
+    }
+  }
+  
+  if(!is_good)
+  {
+      char *res_buf = (char *)malloc(sizeof(char)*RESPONSE_SIZE);
+      
+      int server_socket = initiate_server(req);
+      /*TODO Check for negative return*/
+      
+      int maxfd;
+      if(pid == 0)
+        maxfd = server_socket;
+      else
+        maxfd = (server_socket > client_socket) ? server_socket : client_socket;
+      
+      int val = send_message(server_socket,c_len,buf);
+      (void) val; //Avoid compiler warning
+      /*TODO Check for negative return*/
+      //free(buf);
+      
+      /*Get response from server*/
+      int s_len = get_message(server_socket,RESPONSE_SIZE,maxfd,res_buf);
+      /*TODO Check for negative return*/
+      
+      close(server_socket);
+      
+      /*Parse Request to see if we got a 304*/
+      HttpResponse server_response;
+      char const * d = NULL;
+      try
+      {
+        d = server_response.ParseResponse(res_buf,s_len);
+      }
+      catch(ParseException e)
+      {
+        cout << "Caught an exception in serve_client!\n";
+        char const * ee = e.what();
+        cout << ee<<endl;
+        cout << res_buf<< endl;
+        cout << "QUE?\n";
+        cout << buf;
+        free(res_buf);
+        free(cached_data);
+        close(client_socket);
         return;
-    }
-    
-    char const * c = NULL;
-    
-    //Parse the request
-    try
-    {
-      c = req.ParseRequest(buf,total_count);
-    }
-    catch(ParseException e)
-    {
-      char const * ee = e.what();
-      char bad[] = "Request is not GET";
-      char bad2[] = "Header line does end with \\r\\n";
-      int i = 0;
-      int header_neq = 0;
-      //int req_neq = 0;
-      for(; (bad2[i] != '\0') && (ee[i] != '\0');i++)
-      {
-        if(bad2[i] != ee[i])
-        {
-          header_neq = 1;
-          break;
-        }
       }
-      if(header_neq  == 0)
+      free(buf);
+      (void) d; //Avoid compiler warning
+      if((server_response.GetStatusCode() == "304") && (cached_data != NULL))
       {
-        req.ModifyHeader("Host",req.GetHost());
+        //We have the latest version. Return the cached version and update cache
+        update_cache(req,&server_response,cached_data,s_len);
+        //int value = send_message(client_socket,strlen(cached_data),cached_data);
+        /*TODO Check for negative return*/        
       }
-      for(i = 0; (bad[i] != '\0') && (ee[i] != '\0') && (header_neq == 1);i++)
+      else
       {
-        if(bad[i] != ee[i])
-        {
-          /*Send a 400 response*/
-          char _my400[] = "HTTP/1.1 400 Bad Request\r\n";
-          
-          //TODO Use send here
-          write(sockfd2,_my400,26);
-          
-          shutdown(sockfd2,SHUT_RDWR);
-          close(sockfd2);
-          free(buf);
-          return;
-        }
-      }
-      /*Send a not supported response*/
-      if((header_neq == 1)) //&& (req_neq == 0))
-      {
-        char _my501[] = "HTTP/1.1 501 Not Implemented\r\n";
+        //Rewrite the cache. Return response to client
+        string path = req->GetPath();
+        string h = req->GetHost();
+        int hsize = h.size();
+        int size = path.size();
+        char * host = new char [hsize+1];
+        char * pathc = new char [size+1];
+        for(int i = 0; i < hsize; i++)
+          host[i] = h[i];
+        host[hsize] = '\0';        
+        for(int i = 0; i < size; i++)
+          pathc[i] = path[i];
+        pathc[size] = '\0';
         
-        //TODO Use send here
-        write(sockfd2,_my501,30);
-        
-        shutdown(sockfd2,SHUT_RDWR);
-        close(sockfd2);
-        free(buf);
-        return;
-      }    
-    }
+        cache_write(host,pathc,res_buf,s_len);
+        delete [] pathc;
+        delete [] host;
+      }
+      free(res_buf);
+      if(cached_data != NULL)
+        free(cached_data);
+  }
+  else
+  {
+    if(cached_data != NULL)
+      free(cached_data);
+    free(buf);
+  }
+  
+  if(pid == 0)
+    _exit(0);
+  /*At this point we are ready to send response back to client.
+    The response should be in the cache whether it was updated or not.
+    If the cache doesn't exist, there must have been an error.*/
     
-    (void) c;  // Avoid compiler warning
-    
-    /* Add Connection close header*/
-    req.ModifyHeader("Connection","close");
-    
-    char * my_buf = NULL;
-    int res_len;
-    string temp;
-    int size;
-    char * tempo;
-    
-    //If cached, get last modified date
-    char * cached_data = cache_read(&req);
+  //Cache was modified. Gotta get get it again.
+  fin:
+  /*Wait for children to finish!*/
+  while(numchilds != 0)
+  {
+    wait(NULL);
+    numchilds--;
+  }
+  while(q.size() != 0)
+  {
+    HttpRequest *req1 = q.front();
+    q.pop();
+    cached_data = cache_read(req1);
     if(cached_data != NULL)
     {
-      string last_mod;
-      string expires;
-      HttpResponse cached_res;
-      //May want to add exception handling
-      char const * d = cached_res.ParseResponse(cached_data,strlen(cached_data));
-      (void) d; // avoid compiler warning
-      
-      last_mod = cached_res.FindHeader("Last-Modified");
-      expires = cached_res.FindHeader("Expires");
-      
-      /*TODO*/
-      //Convert to numbers to compare
-      //If Expires is less than todays date, check for update
-      //Else use set my_buf to cache (use strlen stuff too) and goto fin:
-      bool is_current = compare_times(expires);
-      if(is_current)
-      {
-        my_buf = cached_data;
-        res_len = strlen(cached_data);
-        goto fin;
-      }
-      if(last_mod != "")
-      {
-        //cout << date << endl;
-        req.ModifyHeader("If-Modified-Since",last_mod);
-      }
+      int r = send_message(client_socket,strlen(cached_data),cached_data);
+      (void) r; // Avoid compiler warning
+      /*TODO: Check for negative return*/
+      free(cached_data);
     }
-    free(buf);
-    buf = (char *)malloc(sizeof(char)*req.GetTotalLength());
-    req.FormatRequest(buf);
-    
-    /*Copy host name into a char buffer*/
-    temp = req.GetHost();
-    size = temp.size();
-    tempo = new char [size+1];
-    for(int i = 0; i < size; i++)
-      tempo[i] = temp[i];
-    tempo[size] = '\0';
-    
-    total_count = req.GetTotalLength();
-    
-    //Send request to server
-    my_buf = send_request(buf, tempo, total_count,&res_len,sockfd2,&req,cached_data);
-    delete [] tempo;
-    
-    if(my_buf == NULL)
-    {
-      //May want to write to client here
-      shutdown(sockfd2,SHUT_RDWR);
-      close(sockfd2);
-      free(buf);
-      return;
-    }
-    
-    //Respond back to client
-    fin:
-    
-    int acc = 0;
-    for(;;)
-    {
-      int j = send(sockfd2,my_buf+acc,res_len-acc,0);
-      if(j == -1)
-      {
-        cout << "send returned -1!!\n";
-        close(sockfd2);
-        free(buf);
-        free(my_buf);
-        return;
-      }
-      acc += j;
-      if(acc == res_len) break;
-    }
-    
-    //Delete Allocated Buffers
-    free(my_buf);
-    free(buf);
-    
-    //Close sockets
-    shutdown(sockfd2,SHUT_RDWR);
-    close(sockfd2);
+    free(req1);
+  }
+  
+  if(!is_done && (special_counter != 2)) //Client isn't DONE! Unless we've been here before 
+  {
+    special_counter++;
+    goto start;
+  }
+  //All done with this client
+  close(client_socket);
 }
 
 int main (int argc, char *argv[])
@@ -511,7 +681,7 @@ int main (int argc, char *argv[])
   int sockfd = socket(AF_INET,SOCK_STREAM,0);
   
   myAddr.sin_family = AF_INET;
-  myAddr.sin_port = htons(1100);
+  myAddr.sin_port = htons(14805);
   //myAddr.sin_addr.s_addr = htonl(INADDR_ANY);
   inet_pton(AF_INET,"127.0.0.1",&myAddr.sin_addr);
   
@@ -550,13 +720,13 @@ int main (int argc, char *argv[])
       {
         //Child
         close(sockfd);
-        parse_request(sockfd2);
+        serve_client(sockfd2);
         //cout << "GONNA DIE!" << getpid() << endl;
         _exit(0);
       }
     }
     else
-      parse_request(sockfd2);
+      serve_client(sockfd2);
   }
   /*for(int i = 0; i < MAXTHREADS; i++)
     threads[i]->join();*/
