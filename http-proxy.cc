@@ -44,17 +44,17 @@ bool compare_times(string expires)
   if(expires == "")
     return false;
   time_t curr = time(NULL);
-  //struct tm * currentgmt = gmtime(&curr);
+  struct tm * currentgmt = gmtime(&curr);
   //currentgmt->tm_isdst = 0;
-  //time_t currgmt = mktime(currentgmt);
+  time_t currgmt = mktime(currentgmt);
   struct tm exp;
-  //exp.tm_isdst = 0;
+  exp.tm_isdst = 0;
   char const * c = strptime(expires.c_str(),"%a, %d %b %Y %H:%M:%S GMT",&exp);
   time_t expired;
   if(c != NULL)
   {
     expired = mktime(&exp);
-    if(expired > curr)
+    if(expired > currgmt)
     {
       return true;
     }
