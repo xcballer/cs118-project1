@@ -1,0 +1,9 @@
+Partner 1: Anthony Ortega
+ID 1: 503953545
+
+Partner 2: David Gonzalez
+ID 2: 603887748
+
+David was in charge of the caching and multithreading.
+Anthony was in charge of the communication between hosts.
+We used the provided parsing library to parse data.
