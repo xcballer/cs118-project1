@@ -25,7 +25,7 @@ using namespace std;
 
 #define RESPONSE_SIZE 10000
 #define REQUEST_SIZE 8000
-#define CHILDLIMIT 5
+#define CHILDLIMIT 4
 
 static int nChilds = 0;
 
@@ -460,7 +460,7 @@ int get_message(int socket, int size, int maxfd, char* buf)
 
 void serve_client(int client_socket)
 {
-  int maxchild = CHILDLIMIT/2;
+  int maxchild = 1;
   int numchilds = 0;
   pid_t pid;
   char * buf = NULL;
