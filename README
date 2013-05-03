@@ -1,6 +1,21 @@
 Our code uses processes instead of threads for parallelism. The reason we
 chose this is because with threads we could not find a way to sync with
-them without always blocking. We limited our program to 10 total processes
-that handle all the work. The way it works is that we can service 5 clients
-at any given time. For each client, 
+them without always blocking. We limited our program to 9 total processes
+that handle all the work. One main process is in charge of keeping track
+of 4 children processes and pairing them with a client. Once connected
+with a client, that process reads data from the client. Once it gets a 
+full request message, it creates a child process to handle the server
+if there is no cache(or cache is not up-to-date). This way, it can then
+get the next request from the client while the previous request is being
+serviced.
+
+The process that gets the request from the server(or not) writes to the
+cache(or not). We used regular files for caching. Once a client is done
+sending all requests we send responses by sending the cache. The cache
+will always be up-to-date with respect to a client. In order to preserve
+the order of request we used a queue.
+
+It may be possible that a client likes to wait for a response before 
+sending out another request. We planned for this and our code can handle
+it.
 
